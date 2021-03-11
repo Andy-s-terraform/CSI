@@ -1,0 +1,253 @@
+#Author - Andrew Smith							
+#Date - 13/03/2018										
+#Script to pull XML extract and related files for UC and PIP for a user specified NINO and place them into a user		
+#specified folder.										
+
+# Request NINO and INC number in question from the user including quit statements to avoid script being ran with incorrect inputs
+
+$FILETYPE = read-host("Please enter the filetype the NINO is contained within (PIP,UC): ") 
+
+if ($FILETYPE -ne "PIP" -and $FILETYPE -ne "UC"){
+	write-host "Invalid filetype, script exiting..." -Foregroundcolor Red
+	exit
+}
+
+$INCNUM = read-host("Please enter the incident number for the output to be sent to: ") 
+
+$NINO = read-host("Please enter the NINO you would like to pull data for: ") 
+
+if ($NINO.Length -gt 9 -or $NINO.Length -lt 9){
+	write-host "The NINO entered is an invalid length, script exiting..." -Foregroundcolor Red
+	exit
+}
+
+# Define folders and filepaths
+
+$OUTFOLDER = "E:\AMS\NGS INCIDENTS\$INCNUM"
+$EXTRACTFILE = "E:\AMS\NGS INCIDENTS\$INCNUM\PulledData_$INCNUM.txt"
+$REFDATA = "E:\hpexstream\$FILETYPE\reffiles\DRSRef.txt"
+
+# Create User defined Folders and filepaths
+
+New-Item $OUTFOLDER -ItemType directory
+New-Item $EXTRACTFILE -ItemType file
+
+
+# Add warning line to top of extractfile
+
+add-content $EXTRACTFILE "*****************Please check for duplicate extracts/PDFs/XMLXTRACTs as the $NINO may have appeared twice within the same xml extract*****************"
+
+# Set up variables depending on the chosen letter type.
+
+if ($FILETYPE -eq "UC" ){
+        $SEARCHFOLDER = "E:\hpexstream\UC\Output\Stage"
+		$PDFNAMELENGTH = 28
+		$REFDATALTIDENTIFIER = "Lettertype"
+		}
+ElseIf ($FILETYPE -eq "PIP" ){
+        $SEARCHFOLDER = "E:\hpexstream\PIP\Output\Stage"
+		$PDFNAMELENGTH = 29
+		$REFDATALTIDENTIFIER = "VRVR"
+}
+
+# Get store names
+
+$STORES = Get-ChildItem -Name $SEARCHFOLDER -filter "store_data*"
+
+# Get XML names
+
+$XMLSTOSEARCH = foreach($i in $STORES){Get-ChildItem -Name $SEARCHFOLDER\$i -filter "*.xml"} 
+
+# Find XML extract for user given NINO and output to EXTRACTFILE
+
+$XMLEXTRACT = foreach($XMLNAME in $XMLSTOSEARCH){Select-String $NINO $SEARCHFOLDER\*\$XMLNAME}
+$EXTRACTNUM=0
+
+foreach ($EXTRACT in $XMLEXTRACT){
+# Add the filepath to the extract file and XMLextract to the XML file
+
+$XMLDATA = "E:\AMS\NGS INCIDENTS\$INCNUM\XMLDATA$EXTRACTNUM.xml"
+New-Item $XMLDATA -ItemType file
+$EXTRACTNUM = $EXTRACTNUM + 1
+
+add-content $EXTRACTFILE ""
+add-content $EXTRACTFILE "$NINO was found in the path below:"
+add-content $EXTRACTFILE ""
+add-content $EXTRACTFILE $EXTRACT.path
+add-content $EXTRACTFILE ""
+add-content $EXTRACTFILE "The XML extract has been sent to $XMLDATA"
+add-content $XMLDATA $EXTRACT.line
+
+# Set XMLEXTRACT to XMLEXTRACT.Line to leave only data within tags and set path with store as a var for later use in DRSYESFUNC.
+
+$PATHWITHSTORE = $EXTRACT.path
+$EXTRACTDATA = $EXTRACT.line
+$UCIBMQ = $PATHWITHSTORE.Contains("ncs")
+
+# Split the xml without losing the '>' so we can search between tags
+
+$XMLSPLIT = $EXTRACTDATA -split '(?<=>)'
+
+# Search between the tags for the letter type including white space, the variables which follow ending with WS are to get rid of the white space.
+# gets letter type but with white space either side
+
+if ( $FILETYPE -eq "UC" ){
+	$LETTERTYPEWS = ($XMLSPLIT | select-string -pattern "letterType>") -replace 'letterType>' | % { $_.split('<')} | % {$_.Split("/")}
+	}
+ElseIf ( $FILETYPE -eq "PIP" ){
+	$LETTERTYPEWS = ($XMLSPLIT | select-string -pattern "caseLetterType>") -replace 'caseLetterType>' | % { $_.split('<')} | % {$_.Split("/")}
+}
+
+If ( $UCIBMQ -eq "True" ){
+	$LETTERTYPEWS = ($XMLSPLIT | select-string -pattern "xci0:templateName>") -replace 'xci0:templateName>' | % { $_.split('<')} | % {$_.Split("/")}
+}
+
+$LETTERTYPEWS2 = $LETTERTYPEWS | ? {$_ -ne ""} # removes bottom line of white space
+$LETTERTYPEWS3 = $LETTERTYPEWS2 -join '' # removes top line of white space
+$LETTERTYPE = $LETTERTYPEWS3.Replace(' ','') # removes spaces from beginning of line
+
+# Different de-white spacing needed for UCIBM Letter type tags.
+
+If ( $UCIBMQ -eq "True" ){ 
+	$LETTERTYPE = $LETTERTYPEWS2
+}
+
+# Search the relevant ref data for LETTERTYPE to find out if the files go to DRS
+
+$REFDATAFORLET = Import-CSV $REFDATA|?{$_.$REFDATALTIDENTIFIER -match $LETTERTYPE}
+
+# Define if the letter type means file will go to DRS or not
+
+if ($FILETYPE -eq "UC" ){
+    $DRSYESNO = $REFDATAFORLET."Outbound?"
+	}
+ElseIf ($FILETYPE -eq "PIP" ){
+    $DRSYESNO = $REFDATAFORLET.no
+}
+	
+# Function to define what actions should be taken if file was set to go to DRS
+
+Function DRSYESFUNC {
+# Get the store identifier which contains the relevant transact.dat (any variable with WS on the end has white space which will be removed in the following line(s))
+
+$STOREWS = $PATHWITHSTORE.Split("\") | Select-String "store*"
+$FULLSTOREFOLDERNAME = $STOREWS -join ''
+$STORENUMBERWS = $FULLSTOREFOLDERNAME.Split("_") | Select-String "0"
+$STORENUMBER = $STORENUMBERWS -join ''
+
+# Remove the suffix of the NINO ready to be searched within the transact.dat files.
+
+$NINONOSUF = $NINO.Substring(0,$NINO.Length-1)
+
+# Search store outputs for .dat files to search
+
+$TRANSACSTOSEARCHFULL = Get-ChildItem -Path E:\hpexstream\$FILETYPE\Output\Temp\store_output_$STORENUMBER -Filter *.dat -Recurse 
+
+If ( $UCIBMQ -eq "True" ){
+	$TRANSACSTOSEARCHFULL = Get-ChildItem -Path E:\hpexstream\UC\Output\Temp\store_output_$STORENUMBER -Filter *.dat -Recurse 
+}
+
+# Foreach loop to get the container folder names of all the transact.dat files to build the folders paths to search for the user specified NINO
+
+foreach ($TRANSAC in $TRANSACSTOSEARCHFULL){
+	$TRANSACCONTAINER = $TRANSAC.directory.name
+	$FP = $TRANSAC.FullName
+	$PDFNAMEWS = Get-Content $FP | Select-String $NINONOSUF 
+# If statement to not run the below code for $PDFNAMEWS in the loop when they do not contain any data.
+if ($PDFNAMEWS -ne $null){
+	$PDFNAMEWS2 = $PDFNAMEWS | ? {$_ -ne ""}
+	$PDFNAMEWS3 = $PDFNAMEWS2 -join ' '
+	$PDFNAMEWS4 = $PDFNAMEWS3.Replace(' ','')
+	$PDFNAME = $PDFNAMEWS4.Substring($PDFNAMEWS4.Length -$PDFNAMELENGTH)
+
+	add-content $EXTRACTFILE ""
+	add-content $EXTRACTFILE "The PDF created for this NINO can be seen below:"
+	add-content $EXTRACTFILE ""
+	add-content $EXTRACTFILE $PDFNAME
+	add-content $EXTRACTFILE ""
+
+	# Use PDF name var to copy file into incident folder and update extract file.
+
+	cp -Path E:\hpexstream\$FILETYPE\Output\Temp\store_output_$STORENUMBER\$TRANSACCONTAINER\$TRANSACCONTAINER\$PDFNAME -Destination $OUTFOLDER
+
+	# Get .tar files
+	
+	cp -Path E:\hpexstream\$FILETYPE\Output\Temp\store_output_$STORENUMBER\$TRANSACCONTAINER.tar -Destination $OUTFOLDER
+	
+	# Get the DRS batch response for the file
+
+	$DRSSTATUS = Get-ChildItem E:\hpexstream\$FILETYPE\DRSBatchResponses | Select-String $TRANSACCONTAINER
+	
+	add-content $EXTRACTFILE "The DRS batch response for the file(s) can be seen below:"
+	add-content $EXTRACTFILE " "
+	add-content $EXTRACTFILE $DRSSTATUS
+	add-content $EXTRACTFILE " "	
+	add-content $EXTRACTFILE "___________________________________________________________________________________________________________________________"
+	add-content $EXTRACTFILE " "
+}
+}
+}
+
+# Function to define what happens when the file is not set to go to DRS
+
+Function DRSNOFUNC {
+add-content $EXTRACTFILE " "
+add-content $EXTRACTFILE "The letter type found for this NINO does not go to DRS therefore no files have been pulled."
+
+# Skip check and AFP
+
+# Get the Store number as this identifier is used for all related log files
+
+$STOREWS = $PATHWITHSTORE.Split("\") | Select-String "store*"
+$FULLSTOREFOLDERNAME = $STOREWS -join ''
+$STORENUMBERWS = $FULLSTOREFOLDERNAME.Split("_") | Select-String "0"
+$STORENUMBER = $STORENUMBERWS -join ''
+
+# Define the log folder
+
+$LOGSFOLDER = "E:\hpexstream\$FILETYPE\Output\Logs"
+
+# Get AFP name
+
+$LOGFILESWS = Get-ChildItem -Name E:\hpexstream\$FILETYPE\Output\Logs -filter "*$STORENUMBER*" | Select-String AFP
+$LOGFILESWS2 = $LOGFILESWS | ? {$_ -ne ""}
+$AFPNAME = $LOGFILESWS2 -join ''
+
+# Define AFP to search NINO in
+
+$SKIPSEARCHPATH = "E:\hpexstream\$FILETYPE\Output\Logs\$AFPNAME"
+
+# Search for NINO in the AFP
+
+$AFPOUTPUT = Select-String $NINO $SKIPSEARCHPATH
+
+# If the NINO is found (has a line number) then echo the AFP entry for that NINO to show letter type
+
+If ( $AFPOUTPUT.LineNumber -gt 0 ){
+	add-content $EXTRACTFILE " "
+	add-content $EXTRACTFILE "The NINO was found and therefore did not skip, please see the path and extract below. The letter type is at the end of the line."
+	add-content $EXTRACTFILE $AFPOUTPUT
+	add-content $EXTRACTFILE " "
+	add-content $EXTRACTFILE "___________________________________________________________________________________________________________________________"
+	}
+ElseIf ( $AFPOUTPUT.LineNumber -lt 0){
+	add-content $EXTRACTFILE " "
+	add-content $EXTRACTFILE "The NINO could not be found, Therefore the file has skipped."
+	add-content $EXTRACTFILE " "
+	add-content $EXTRACTFILE "___________________________________________________________________________________________________________________________"
+}
+}
+
+
+# If statement to point to relevant function depending on if files go to DRS or not
+if ($DRSYESNO -eq "Yes" ){
+        DRSYESFUNC}
+ElseIf ($DRSYESNO -eq "No" ){
+        DRSNOFUNC
+}
+}
+
+write-host ""
+write-host "The extracts for $NINO should now be in $OUTFOLDER." -Foregroundcolor Green
+
+Invoke-Item $OUTFOLDER
