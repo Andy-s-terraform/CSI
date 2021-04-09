@@ -1,0 +1,4 @@
+union isfuzzy=true availabilityResults,requests,exceptions,pageViews,traces,customEvents,dependencies
+| where timestamp > datetime("2021-03-18T09:00:04.266Z") and timestamp < datetime("2021-03-18T17:00:04.266Z") and user_Id == 'XXXX'
+| order by timestamp desc
+| project timestamp,id,name,location,success,resultCode,user_Id,message,size,duration,performanceBucket,itemType,customDimensions,customMeasurements,operation_Name,operation_Id,operation_ParentId,operation_SyntheticSource,session_Id,user_AuthenticatedId,user_AccountId,application_Version,client_Type,client_Model,client_OS,client_IP,client_City,client_StateOrProvince,client_CountryOrRegion,client_Browser,cloud_RoleName,cloud_RoleInstance,appId,appName,iKey,sdkVersion,itemId,itemCount,source,url,problemId,handledAt,type,assembly,method,outerType,outerMessage,outerAssembly,outerMethod,innermostType,innermostMessage,innermostAssembly,innermostMethod,severityLevel,details,target,data
